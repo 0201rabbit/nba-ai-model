@@ -253,10 +253,19 @@ else:
         
         if h_is_b2b:
             h_pen += 3.5 
-            h_rep.append(f"🔋 [{h_n}] 主場背靠背")
+            h_rep.append(f"🔋 [{h_n}] 主場背靠背 (體能下滑)")
         if a_is_b2b:
-            a_pen += 4.5
-            a_rep.append(f"✈️ [{a_n}] 客場背靠背")
+            yest_loc = b2b_data[a_id]
+            if yest_loc == "Away":
+                a_pen += 5.5
+                a_rep.append(f"✈️ [{a_n}] 連續客場背靠背 (嚴重飛行疲勞)")
+            else:
+                a_pen += 4.0
+                a_rep.append(f"🔋 [{a_n}] 客場背靠背 (體能下滑)")
+
+            if TEAM_ZONE.get(a_n_en) != TEAM_ZONE.get(h_n_en):
+                a_pen += 1.5
+                a_rep.append(f"🌎 [{a_n}] 跨區時差作戰 (疲勞加劇)")
 
         try: 
             h_d = s_h[s_h["TEAM_ID"] == h_id].iloc[0] 
@@ -325,4 +334,48 @@ else:
     if match_data:
         st.dataframe(pd.DataFrame(match_data)[["對戰組合", "AI預測比分(客:主)", "主隊勝率(PK)", "市場讓分(主)", "實際比分"]], use_container_width=True) 
 
-st.caption("NBA AI V31.1 - 操盤手強化版：新增不讓分(PK)勝率預測系統")
+    # 🛡️ 這裡幫你把失蹤的「單場深度解析與手動測試儀」加回來了！
+    st.divider() 
+    st.header("🔍 單場深度解析與手動測試儀") 
+    if match_data:
+        s_game = st.selectbox("請選擇要深入分析的場次：", match_data, format_func=lambda x: x["對戰組合"]) 
+        
+        col_a, col_b = st.columns(2) 
+        with col_a: 
+            st.subheader("📝 變數與陣容報告") 
+            if s_game["reports"]: 
+                for r in s_game["reports"]: 
+                    if "✈️" in r or "🌎" in r or "🔋" in r: st.error(r)  
+                    else: st.warning(r) 
+            else: 
+                st.success("✅ 無異常變數干擾。") 
+                
+        with col_b: 
+            st.subheader("🎲 跑一萬次！動態 EV 模擬") 
+            u_spread = st.number_input(f"請輸入台彩開給主隊的讓分 (例: -4.5)", value=-4.5, step=0.5) 
+            u_total = st.number_input(f"請輸入大小分總分盤口 (例: 225.5)", value=225.5, step=0.5) 
+            
+            # 即時跑蒙地卡羅
+            sim_diff, sim_total = run_monte_carlo(s_game['h_s'], s_game['a_s'], s_game['game_pace'])
+            
+            prob_cover_h = np.mean(sim_diff > -u_spread)
+            prob_cover_a = np.mean(sim_diff < -u_spread)
+            prob_over = np.mean(sim_total > u_total)
+            prob_under = np.mean(sim_total < u_total)
+            
+            ev_h = calculate_ev(prob_cover_h)
+            ev_a = calculate_ev(prob_cover_a)
+            ev_over = calculate_ev(prob_over)
+            ev_under = calculate_ev(prob_under)
+            
+            st.write("▶️ **讓分盤 10,000 次模擬結果：**")
+            st.write(f"主隊 ({u_spread}) 過盤率: `{prob_cover_h:.1%}` ➡️ EV: `{ev_h:.1%}`")
+            st.write(f"客隊 ({-u_spread}) 過盤率: `{prob_cover_a:.1%}` ➡️ EV: `{ev_a:.1%}`")
+            
+            st.divider()
+            
+            st.write("▶️ **大小分 10,000 次模擬結果：**")
+            st.write(f"大分 (> {u_total}) 機率: `{prob_over:.1%}` ➡️ EV: `{ev_over:.1%}`")
+            st.write(f"小分 (< {u_total}) 機率: `{prob_under:.1%}` ➡️ EV: `{ev_under:.1%}`")
+
+st.caption("NBA AI V31.1 - 操盤手強化版：新增不讓分(PK)勝率預測系統 & 手動深度解析儀歸位")
