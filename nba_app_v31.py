@@ -3,6 +3,7 @@ import pandas as pd
 import requests 
 import numpy as np
 import time
+import random
 from bs4 import BeautifulSoup 
 from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2, leaguedashplayerstats 
 from nba_api.stats.static import teams 
@@ -38,7 +39,7 @@ TEAM_ZONE = {
 }
 
 ODDS_API_TEAMS = {k: k for k in TEAM_CN.keys()} 
-ODDS_API_TEAMS["LA Clippers"] = "Los Angeles Clippers" # 修正命名不一
+ODDS_API_TEAMS["LA Clippers"] = "Los Angeles Clippers"
 
 STAR_PLAYERS = { 
     "Lakers": ["LeBron James", "Anthony Davis", "D'Angelo Russell", "Austin Reaves"],  
@@ -57,29 +58,34 @@ STAR_PLAYERS = {
 } 
 
 # ---------------------------------------------------------
-# 1. 終極數據引擎 (解決 Read Timeout 與封鎖問題)
+# 1. 終極數據引擎 (V31.6 強力偽裝與異常容錯)
 # ---------------------------------------------------------
 
-NBA_HEADERS = {
-    'Host': 'stats.nba.com',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Referer': 'https://stats.nba.com/',
-    'x-nba-stats-origin': 'stats',
-    'x-nba-stats-token': 'true'
-}
+# 模擬隨機 Referer
+def get_headers():
+    refs = [
+        "https://www.nba.com/",
+        "https://stats.nba.com/teams/advanced/",
+        "https://stats.nba.com/scores/"
+    ]
+    return {
+        'Host': 'stats.nba.com',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': random.choice(refs),
+        'Origin': 'https://www.nba.com',
+        'Connection': 'keep-alive'
+    }
 
-# 🛡️ 增量更新：加入帶 Retry 的 API 請求函數
-def call_nba_api(endpoint_class, **kwargs):
-    for i in range(3): # 最多嘗試三次
+# 🛡️ 帶有強力延時與隨機性的請求函數
+def call_nba_api_stable(endpoint_class, **kwargs):
+    for i in range(4): # 增加到 4 次重試
         try:
-            time.sleep(i * 1.5) # 遞增延遲，避免密集撞擊
-            return endpoint_class(**kwargs, headers=NBA_HEADERS, timeout=30).get_data_frames()[0]
+            time.sleep(random.uniform(2.0, 4.0)) # 隨機延時 2-4 秒，模擬真人行為
+            return endpoint_class(**kwargs, headers=get_headers(), timeout=30).get_data_frames()[0]
         except Exception as e:
-            if i == 2: raise e
+            if i == 3: raise e
             continue
 
 @st.cache_data(ttl=600) 
@@ -105,7 +111,7 @@ def get_injury_impact(team_name, raw_html_text):
                     penalty += 2.5; reports.append(f"⚠️ {player}(?)"); has_gtd = True; out_players.append(player)
     return min(penalty, 9.5), reports, has_gtd, out_players 
 
-@st.cache_data(ttl=1800) # 稍微縮短 cache 確保最新盤口能對應
+@st.cache_data(ttl=1800) 
 def fetch_nba_master(game_date_str): 
     game_date_obj = datetime.strptime(game_date_str, '%Y-%m-%d')
     date_api_format = game_date_obj.strftime('%m/%d/%Y') 
@@ -113,25 +119,27 @@ def fetch_nba_master(game_date_str):
     team_dict = {t["id"]: t["full_name"] for t in teams.get_teams()} 
     
     try:
-        # 使用修復後的 call_nba_api 函數
-        sb_data = scoreboardv2.ScoreboardV2(game_date=game_date_str, headers=NBA_HEADERS, timeout=30).get_data_frames()
-        games = sb_data[0].drop_duplicates(subset=['GAME_ID']) 
-        line_score = sb_data[1] 
+        # Scoreboard 本身通常比較穩，先抓
+        sb_inst = scoreboardv2.ScoreboardV2(game_date=game_date_str, headers=get_headers(), timeout=30)
+        games = sb_inst.get_data_frames()[0].drop_duplicates(subset=['GAME_ID']) 
+        line_score = sb_inst.get_data_frames()[1] 
         
-        yest_games = scoreboardv2.ScoreboardV2(game_date=yest_str, headers=NBA_HEADERS, timeout=30).get_data_frames()[0]
-        b2b_data = {row["HOME_TEAM_ID"]: "Home" for _, row in yest_games.iterrows()}
-        b2b_data.update({row["VISITOR_TEAM_ID"]: "Away" for _, row in yest_games.iterrows()})
+        # 使用穩定請求函數抓取核心數據
+        s_h = call_nba_api_stable(leaguedashteamstats.LeagueDashTeamStats, measure_type_detailed_defense="Advanced", location_nullable="Home", date_to_nullable=date_api_format)
+        s_a = call_nba_api_stable(leaguedashteamstats.LeagueDashTeamStats, measure_type_detailed_defense="Advanced", location_nullable="Road", date_to_nullable=date_api_format)
+        p_stats = call_nba_api_stable(leaguedashplayerstats.LeagueDashPlayerStats, measure_type_detailed_defense="Advanced", date_to_nullable=date_api_format)
         
-        s_h = call_nba_api(leaguedashteamstats.LeagueDashTeamStats, measure_type_detailed_defense="Advanced", location_nullable="Home", date_to_nullable=date_api_format)
-        s_a = call_nba_api(leaguedashteamstats.LeagueDashTeamStats, measure_type_detailed_defense="Advanced", location_nullable="Road", date_to_nullable=date_api_format)
-        p_stats = call_nba_api(leaguedashplayerstats.LeagueDashPlayerStats, measure_type_detailed_defense="Advanced", date_to_nullable=date_api_format)
-        
-        try: s_last5 = call_nba_api(leaguedashteamstats.LeagueDashTeamStats, measure_type_detailed_defense="Advanced", last_n_games=5, date_to_nullable=date_api_format)
+        # B2B 邏輯保留
+        y_sb = scoreboardv2.ScoreboardV2(game_date=yest_str, headers=get_headers(), timeout=30).get_data_frames()[0]
+        b2b_data = {row["HOME_TEAM_ID"]: "Home" for _, row in y_sb.iterrows()}
+        b2b_data.update({row["VISITOR_TEAM_ID"]: "Away" for _, row in y_sb.iterrows()})
+
+        try: s_last5 = call_nba_api_stable(leaguedashteamstats.LeagueDashTeamStats, measure_type_detailed_defense="Advanced", last_n_games=5, date_to_nullable=date_api_format)
         except: s_last5 = pd.DataFrame()
             
         return team_dict, games, line_score, s_h, s_a, p_stats, b2b_data, s_last5
     except Exception as e:
-        st.error(f"NBA API 連線異常: {e} (伺服器繁忙，請按 F5 或等一分鐘再試)")
+        st.error(f"NBA API 通訊失敗 (V31.6 保護機制已啟動): {e}")
         return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, pd.DataFrame()
 
 @st.cache_data(ttl=900) 
@@ -161,7 +169,7 @@ def calculate_ev(win_prob, decimal_odds=1.909):
 # ---------------------------------------------------------
 # 2. UI 介面整合 (嚴格遵守增量更新原則)
 # ---------------------------------------------------------
-st.set_page_config(page_title="NBA AI 攻防大師 V31.5", layout="wide", page_icon="🏀") 
+st.set_page_config(page_title="NBA AI 攻防大師 V31.6", layout="wide", page_icon="🏀") 
 
 st.sidebar.header("🗓️ 系統控制台") 
 target_date = st.sidebar.date_input("選擇日期", datetime.now() - timedelta(hours=8)) 
@@ -171,15 +179,15 @@ st.sidebar.divider()
 api_key = st.secrets.get("ODDS_API_KEY", "")
 if not api_key: api_key = st.sidebar.text_input("輸入 API 金鑰 (選填)", type="password")
 
-st.title(f"🏀 NBA AI V31.5 職業戰略儀表板 ({formatted_date})") 
+st.title(f"🏀 NBA AI V31.6 職業戰略儀表板 ({formatted_date})") 
 
-with st.spinner("雷達掃描中：模擬萬場比賽與 EV 運算中..."): 
+with st.spinner("⏳ 正在慢速同步 NBA 數據庫以避開防火牆偵測..."): 
     t_dict, games_df, line_df, s_h, s_a, p_stats, b2b_data, s_last5 = fetch_nba_master(formatted_date) 
     raw_inj = fetch_injury_raw() 
     live_odds = fetch_live_odds(api_key) if target_date >= (datetime.now() - timedelta(hours=24)).date() else {}
 
 if games_df.empty: 
-    st.info(f"📅 {formatted_date} 此日期暫無賽程數據。NBA 時間與台彩不同，請選 3/17 試試。") 
+    st.info(f"📅 {formatted_date} 此日期暫無賽程數據。建議嘗試選擇 3/17 以對位台彩賽事。") 
 else:
     match_data, all_ev_opportunities = [], []
     is_historical = target_date < (datetime.now() - timedelta(hours=8)).date() 
@@ -265,4 +273,4 @@ else:
             pc = np.mean(sd > -u_s)
             st.metric("預估過盤率", f"{pc:.1%}", delta=f"EV: {calculate_ev(pc):.1%}")
 
-st.caption("NBA AI V31.5 - 終極抗壓版：修復連線超時、加入延時重試機制、全功能完整保留")
+st.caption("NBA AI V31.6 - 終極穩定版：導入連線隨機時延與重試機制，全面對抗官網封鎖")
