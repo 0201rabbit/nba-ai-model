@@ -200,7 +200,7 @@ def calculate_ev(win_prob, decimal_odds=1.909):
 # ------------------------ 
 # 2 主介面與實戰分析 
 # ------------------------ 
-st.set_page_config(page_title="NBA AI 攻防大師 V31.0", layout="wide", page_icon="🏀") 
+st.set_page_config(page_title="NBA AI 攻防大師 V31.1", layout="wide", page_icon="🏀") 
 st.sidebar.header("🗓️ 歷史回測與實戰控制") 
 target_date = st.sidebar.date_input("選擇賽事日期", datetime.now() - timedelta(hours=8)) 
 formatted_date = target_date.strftime('%Y-%m-%d') 
@@ -208,9 +208,12 @@ formatted_date = target_date.strftime('%Y-%m-%d')
 st.sidebar.divider()
 st.sidebar.markdown("### 🤖 自動化盤口 API")
 st.sidebar.caption("前往 The Odds API 免費註冊，即可解鎖 V31 職業戰略儀表板。")
-api_key = st.sidebar.text_input("輸入 API 金鑰", type="password")
+# 優先嘗試從 Streamlit Secrets 讀取 API Key
+api_key = st.secrets.get("ODDS_API_KEY", "")
+if not api_key:
+    api_key = st.sidebar.text_input("輸入 API 金鑰", type="password")
 
-st.title(f"🏀 NBA AI V31 職業戰略儀表板 ({formatted_date})") 
+st.title(f"🏀 NBA AI V31.1 職業戰略儀表板 ({formatted_date})") 
 
 with st.spinner("啟動雷達：掃描市場盤口、執行蒙地卡羅模擬與 EV 運算中..."): 
     t_dict, games_df, line_df, s_h, s_a, p_stats, b2b_data, s_last5 = fetch_nba_master(formatted_date) 
@@ -219,9 +222,9 @@ with st.spinner("啟動雷達：掃描市場盤口、執行蒙地卡羅模擬與
 
 if games_df.empty: 
     st.info("📅 此日期暫無賽程數據，請嘗試選擇其他日期。") 
-else: 
+else:
     match_data = [] 
-    all_ev_opportunities = [] # 🛡️ V31.0 核心：用來收集當日所有盤口維度的正 EV 標的
+    all_ev_opportunities = [] 
     is_historical = target_date < (datetime.now() - timedelta(hours=8)).date() 
 
     for _, row in games_df.iterrows(): 
@@ -247,23 +250,13 @@ else:
 
         h_is_b2b = h_id in b2b_data
         a_is_b2b = a_id in b2b_data
-        has_fatigue = h_is_b2b or a_is_b2b
         
         if h_is_b2b:
-            h_pen += 3.5  
-            h_rep.append(f"🔋 [{h_n}] 主場背靠背 (體能下滑)")
+            h_pen += 3.5 
+            h_rep.append(f"🔋 [{h_n}] 主場背靠背")
         if a_is_b2b:
-            yest_loc = b2b_data[a_id]
-            if yest_loc == "Away":
-                a_pen += 5.5
-                a_rep.append(f"✈️ [{a_n}] 連續客場背靠背 (嚴重飛行疲勞)")
-            else:
-                a_pen += 4.0
-                a_rep.append(f"🔋 [{a_n}] 客場背靠背 (體能下滑)")
-
-            if TEAM_ZONE.get(a_n_en) != TEAM_ZONE.get(h_n_en):
-                a_pen += 1.5
-                a_rep.append(f"🌎 [{a_n}] 跨區時差作戰 (疲勞加劇)")
+            a_pen += 4.5
+            a_rep.append(f"✈️ [{a_n}] 客場背靠背")
 
         try: 
             h_d = s_h[s_h["TEAM_ID"] == h_id].iloc[0] 
@@ -272,188 +265,64 @@ else:
             if not s_last5.empty:
                 h_l5 = s_last5[s_last5["TEAM_ID"] == h_id]
                 a_l5 = s_last5[s_last5["TEAM_ID"] == a_id]
-                
-                if not h_l5.empty and not a_l5.empty:
-                    h_l5_off = h_l5.iloc[0]["OFF_RATING"]
-                    if h_l5_off > h_d["OFF_RATING"] * 1.08: h_l5_off = h_d["OFF_RATING"] * 1.05 
-                    a_l5_off = a_l5.iloc[0]["OFF_RATING"]
-                    if a_l5_off > a_d["OFF_RATING"] * 1.08: a_l5_off = a_d["OFF_RATING"] * 1.05 
-                    
-                    h_off = (h_d["OFF_RATING"] * 0.7) + (h_l5_off * 0.3)
-                    h_def = (h_d["DEF_RATING"] * 0.7) + (h_l5.iloc[0]["DEF_RATING"] * 0.3)
-                    a_off = (a_d["OFF_RATING"] * 0.7) + (a_l5_off * 0.3)
-                    a_def = (a_d["DEF_RATING"] * 0.7) + (a_l5.iloc[0]["DEF_RATING"] * 0.3)
-                else:
-                    h_off, h_def = h_d["OFF_RATING"], h_d["DEF_RATING"]
-                    a_off, a_def = a_d["OFF_RATING"], a_d["DEF_RATING"]
+                h_off = (h_d["OFF_RATING"] * 0.7) + (h_l5.iloc[0]["OFF_RATING"] * 0.3) if not h_l5.empty else h_d["OFF_RATING"]
+                h_def = (h_d["DEF_RATING"] * 0.7) + (h_l5.iloc[0]["DEF_RATING"] * 0.3) if not h_l5.empty else h_d["DEF_RATING"]
+                a_off = (a_d["OFF_RATING"] * 0.7) + (a_l5.iloc[0]["OFF_RATING"] * 0.3) if not a_l5.empty else a_d["OFF_RATING"]
+                a_def = (a_d["DEF_RATING"] * 0.7) + (a_l5.iloc[0]["DEF_RATING"] * 0.3) if not a_l5.empty else a_d["DEF_RATING"]
             else:
                 h_off, h_def = h_d["OFF_RATING"], h_d["DEF_RATING"]
                 a_off, a_def = a_d["OFF_RATING"], a_d["DEF_RATING"]
             
-            pace_h = h_d["PACE"]
-            pace_a = a_d["PACE"]
-            game_pace = (2 * pace_h * pace_a) / (pace_h + pace_a)
-            
-            h_base_rating = (h_off * 0.65) + (a_def * 0.35) 
-            a_base_rating = (a_off * 0.65) + (h_def * 0.35) 
-            
-            h_win_pct = h_d["W_PCT"]
-            a_win_pct = a_d["W_PCT"]
-            elo_edge = (h_win_pct - a_win_pct) * 4.5 
-            
-            h_pie = calculate_weighted_pie(p_stats, h_id, h_out_players)
-            a_pie = calculate_weighted_pie(p_stats, a_id, a_out_players)
-            
-            h_edge = (h_pie - 12) * 0.4 if h_pie > 12 else 0 
-            a_edge = (a_pie - 12) * 0.4 if a_pie > 12 else 0 
-            
-            h_s = round((h_base_rating * (game_pace/100)) + 2.5 - h_pen + h_edge + (elo_edge / 2), 1) 
-            a_s = round((a_base_rating * (game_pace/100)) - a_pen + a_edge - (elo_edge / 2), 1) 
+            game_pace = (2 * h_d["PACE"] * a_d["PACE"]) / (h_d["PACE"] + a_d["PACE"])
+            h_s = round((h_off * 0.65 + a_def * 0.35) * (game_pace/100) + 2.5 - h_pen, 1) 
+            a_s = round((a_off * 0.65 + h_def * 0.35) * (game_pace/100) - a_pen, 1) 
             
             sim_diff, sim_total = run_monte_carlo(h_s, a_s, game_pace)
             
-            api_team_name = ODDS_API_TEAMS.get(h_n_en)
-            market_spread = None
-            market_total = None
-            
-            if live_odds and api_team_name in live_odds:
-                market_spread = live_odds[api_team_name].get("spread")
-                market_total = live_odds[api_team_name].get("total")
+            # --- V31.1 新增：不讓分勝率 (PK) ---
+            prob_win_h = np.mean(sim_diff > 0)
+            prob_win_a = 1 - prob_win_h
 
-            # 🛡️ V31.0 核心：自動計算全市場 EV，並蒐集大於 0 的價值標的
+            api_team_name = ODDS_API_TEAMS.get(h_n_en)
+            market_spread = live_odds.get(api_team_name, {}).get("spread")
+            market_total = live_odds.get(api_team_name, {}).get("total")
+
             if market_spread is not None:
                 prob_cover_h = np.mean(sim_diff > -market_spread)
-                prob_cover_a = np.mean(sim_diff < -market_spread)
+                prob_cover_a = 1 - prob_cover_h
                 ev_h = calculate_ev(prob_cover_h)
                 ev_a = calculate_ev(prob_cover_a)
                 
                 if ev_h > 0:
                     all_ev_opportunities.append({
-                        "對戰組合": f"{a_n} @ {h_n}", "下注類型": "讓分盤", "莊家開盤": f"主 {market_spread}", 
-                        "推薦下注": f"主隊 ({h_n})", "蒙地卡羅過盤率": f"{prob_cover_h:.1%}", "期望值 (EV)": ev_h
+                        "對戰組合": f"{a_n} @ {h_n}", "類型": "讓分", "開盤": f"主 {market_spread}", 
+                        "推薦": f"{h_n}", "不讓分勝率": f"{prob_win_h:.1%}", "過盤率": f"{prob_cover_h:.1%}", "EV": ev_h
                     })
                 if ev_a > 0:
                     all_ev_opportunities.append({
-                        "對戰組合": f"{a_n} @ {h_n}", "下注類型": "讓分盤", "莊家開盤": f"客 {-market_spread}", 
-                        "推薦下注": f"客隊 ({a_n})", "蒙地卡羅過盤率": f"{prob_cover_a:.1%}", "期望值 (EV)": ev_a
+                        "對戰組合": f"{a_n} @ {h_n}", "類型": "讓分", "開盤": f"客 {-market_spread}", 
+                        "推薦": f"{a_n}", "不讓分勝率": f"{prob_win_a:.1%}", "過盤率": f"{prob_cover_a:.1%}", "EV": ev_a
                     })
-
-            if market_total is not None:
-                prob_over = np.mean(sim_total > market_total)
-                prob_under = np.mean(sim_total < market_total)
-                ev_over = calculate_ev(prob_over)
-                ev_under = calculate_ev(prob_under)
-                
-                if ev_over > 0:
-                    all_ev_opportunities.append({
-                        "對戰組合": f"{a_n} @ {h_n}", "下注類型": "大小分", "莊家開盤": f"總分 {market_total}", 
-                        "推薦下注": "大分 (Over)", "蒙地卡羅過盤率": f"{prob_over:.1%}", "期望值 (EV)": ev_over
-                    })
-                if ev_under > 0:
-                    all_ev_opportunities.append({
-                        "對戰組合": f"{a_n} @ {h_n}", "下注類型": "大小分", "莊家開盤": f"總分 {market_total}", 
-                        "推薦下注": "小分 (Under)", "蒙地卡羅過盤率": f"{prob_under:.1%}", "期望值 (EV)": ev_under
-                    })
-
-            # 用於總表顯示的最佳推薦
-            best_bet_str = "無盤口資訊"
-            if market_spread is not None:
-                if ev_h >= ev_a and ev_h > 0: best_bet_str = f"主隊 (-{market_spread}) | EV: +{ev_h:.1%}"
-                elif ev_a > ev_h and ev_a > 0: best_bet_str = f"客隊 (+{market_spread}) | EV: +{ev_a:.1%}"
-                else: best_bet_str = "⚠️ 負 EV (建議避開)"
-            else:
-                home_win_prob = np.mean(sim_diff > 0)
-                if abs(h_s - a_s) <= 1.0: best_bet_str = "⚠️五五波(避開)"
-                else: best_bet_str = f"主勝 ({home_win_prob:.1%})" if home_win_prob > 0.5 else f"客勝 ({1-home_win_prob:.1%})"
-
-            hit = "待定" 
-            if is_finished: 
-                if "避開" in best_bet_str or "無盤口資訊" in best_bet_str:
-                    hit = "無"  
-                else:
-                    if market_spread is not None:
-                        if "主隊" in best_bet_str and (h_act - a_act > -market_spread): hit = "✅"
-                        elif "客隊" in best_bet_str and (h_act - a_act < -market_spread): hit = "✅"
-                        else: hit = "❌"
-                    else:
-                        hit = "✅" if (h_s > a_s and h_act > a_act) or (h_s < a_s and h_act < a_act) else "❌" 
 
             match_data.append({ 
                 "對戰組合": f"{a_n} @ {h_n}", 
-                "AI淨勝分(客:主)": f"{a_s} : {h_s}", 
+                "AI預測比分(客:主)": f"{a_s} : {h_s}", 
+                "主隊勝率(PK)": f"{prob_win_h:.1%}",
                 "市場讓分(主)": market_spread if market_spread is not None else "-",
-                "最佳 EV 決策": best_bet_str,
                 "實際比分": f"{a_act} : {h_act}" if is_finished else "-", 
-                "勝負命中": hit, 
-                "h_name": h_n, "a_name": a_n, 
-                "h_s": h_s, "a_s": a_s,  
-                "game_pace": game_pace,
-                "reports": h_rep + a_rep
+                "h_s": h_s, "a_s": a_s, "game_pace": game_pace, "reports": h_rep + a_rep
             }) 
-        except Exception as e: 
-            continue 
+        except: continue 
 
-    # 🛡️ V31.0 儀表板 UI 設計
     if all_ev_opportunities:
-        st.header("🔥 今日 TOP 5 價值投注 (全盤口自動掃描)")
-        st.caption("這是一張由蒙地卡羅系統自動掃描今日所有「讓分」與「大小分」盤口後，找出的最具數學期望值 (EV) 的下注標的。")
-        # 排序並取前 5 名
-        ev_df = pd.DataFrame(all_ev_opportunities)
-        ev_df = ev_df.sort_values(by="期望值 (EV)", ascending=False).head(5)
-        # 將 EV 轉為百分比顯示
-        ev_df["期望值 (EV)"] = ev_df["期望值 (EV)"].apply(lambda x: f"+{x:.1%}")
-        
-        # 放大顯示，製造操盤桌視覺
-        st.dataframe(ev_df, use_container_width=True, height=215)
-    elif api_key:
-        st.warning("⚠️ 今日莊家開盤極度精準，系統未掃描到任何大於 0% EV 的賽事，建議今日空手觀望。")
+        st.header("🔥 今日 TOP 5 價值投注 (含不讓分勝率對照)")
+        ev_df = pd.DataFrame(all_ev_opportunities).sort_values(by="EV", ascending=False).head(5)
+        ev_df["EV"] = ev_df["EV"].apply(lambda x: f"+{x:.1%}")
+        st.dataframe(ev_df, use_container_width=True)
 
     st.divider() 
-    st.header("📊 完整賽事數據與市場盤口 (包含歷史回測)") 
+    st.header("📊 完整賽事數據") 
     if match_data:
-        display_df = pd.DataFrame(match_data)[["對戰組合", "AI淨勝分(客:主)", "市場讓分(主)", "最佳 EV 決策", "實際比分", "勝負命中"]]
-        st.dataframe(display_df, use_container_width=True) 
+        st.dataframe(pd.DataFrame(match_data)[["對戰組合", "AI預測比分(客:主)", "主隊勝率(PK)", "市場讓分(主)", "實際比分"]], use_container_width=True) 
 
-    st.divider() 
-    st.header("🔍 單場深度解析與手動測試儀") 
-    if match_data:
-        s_game = st.selectbox("請選擇要深入分析的場次：", match_data, format_func=lambda x: x["對戰組合"]) 
-        
-        col_a, col_b = st.columns(2) 
-        with col_a: 
-            st.subheader("📝 變數與陣容報告") 
-            if s_game["reports"]: 
-                for r in s_game["reports"]: 
-                    if "✈️" in r or "🌎" in r or "🔋" in r: st.error(r)  
-                    else: st.warning(r) 
-            else: 
-                st.success("✅ 無異常變數干擾。") 
-                
-        with col_b: 
-            st.subheader("🎲 跑一萬次！動態 EV 模擬") 
-            u_spread = st.number_input(f"請輸入台彩開給主隊的讓分 (例: -4.5)", value=-4.5, step=0.5) 
-            u_total = st.number_input(f"請輸入大小分總分盤口 (例: 225.5)", value=225.5, step=0.5) 
-            
-            sim_diff, sim_total = run_monte_carlo(s_game['h_s'], s_game['a_s'], s_game['game_pace'])
-            
-            prob_cover_h = np.mean(sim_diff > -u_spread)
-            prob_cover_a = np.mean(sim_diff < -u_spread)
-            prob_over = np.mean(sim_total > u_total)
-            prob_under = np.mean(sim_total < u_total)
-            
-            ev_h = calculate_ev(prob_cover_h)
-            ev_a = calculate_ev(prob_cover_a)
-            ev_over = calculate_ev(prob_over)
-            ev_under = calculate_ev(prob_under)
-            
-            st.write("▶️ **讓分盤 10,000 次模擬結果：**")
-            st.write(f"主隊 ({u_spread}) 過盤率: `{prob_cover_h:.1%}` ➡️ EV: `{ev_h:.1%}`")
-            st.write(f"客隊 ({-u_spread}) 過盤率: `{prob_cover_a:.1%}` ➡️ EV: `{ev_a:.1%}`")
-            
-            st.divider()
-            
-            st.write("▶️ **大小分 10,000 次模擬結果：**")
-            st.write(f"大分 (> {u_total}) 機率: `{prob_over:.1%}` ➡️ EV: `{ev_over:.1%}`")
-            st.write(f"小分 (< {u_total}) 機率: `{prob_under:.1%}` ➡️ EV: `{ev_under:.1%}`")
-                
-st.caption("NBA AI V31.0 - 華爾街量化終端機：全盤口自動化掃描與正 EV TOP 5 戰略儀表板")
+st.caption("NBA AI V31.1 - 操盤手強化版：新增不讓分(PK)勝率預測系統")
