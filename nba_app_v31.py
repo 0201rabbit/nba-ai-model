@@ -7,9 +7,9 @@ from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2, leaguedas
 from nba_api.stats.static import teams 
 from datetime import datetime, timedelta 
 
-# ------------------------ 
-# 0 核心配置與中英對照庫 
-# ------------------------ 
+# ---------------------------------------------------------
+# 0. 核心配置與中英對照庫
+# ---------------------------------------------------------
 TEAM_CN = { 
     "Atlanta Hawks": "老鷹", "Boston Celtics": "塞爾提克", "Brooklyn Nets": "籃網", 
     "Charlotte Hornets": "黃蜂", "Chicago Bulls": "公牛", "Cleveland Cavaliers": "騎士", 
@@ -65,90 +65,81 @@ STAR_PLAYERS = {
     "Kings": ["De'Aaron Fox", "Domantas Sabonis"] 
 } 
 
-PLAYER_CN = { 
-    "LeBron James": "詹姆斯", "Anthony Davis": "戴維斯", "D'Angelo Russell": "羅素", "Austin Reaves": "里夫斯", 
-    "Nikola Jokic": "約基奇", "Jamal Murray": "莫瑞", "Aaron Gordon": "高登", "Michael Porter Jr.": "小波特", 
-    "Jayson Tatum": "塔圖姆", "Jaylen Brown": "布朗", "Kristaps Porzingis": "波辛吉斯", "Derrick White": "懷特", "Jrue Holiday": "哈勒戴", 
-    "Luka Doncic": "唐西奇", "Kyrie Irving": "厄文", "Dereck Lively": "萊夫利", 
-    "Shai Gilgeous-Alexander": "亞歷山大", "Chet Holmgren": "霍姆格倫", "Jalen Williams": "威廉斯", 
-    "Anthony Edwards": "愛德華茲", "Rudy Gobert": "戈貝爾", "Karl-Anthony Towns": "唐斯", 
-    "Giannis Antetokounmpo": "字母哥", "Damian Lillard": "里拉德", "Khris Middleton": "米德爾頓", 
-    "Stephen Curry": "柯瑞", "Draymond Green": "格林", "Jonathan Kuminga": "庫明加", "Andrew Wiggins": "威金斯", 
-    "Kevin Durant": "杜蘭特", "Devin Booker": "布克", "Bradley Beal": "比爾", 
-    "Joel Embiid": "恩比德", "Tyrese Maxey": "馬克西", "Paul George": "喬治", 
-    "Kawhi Leonard": "雷納德", "James Harden": "哈登", 
-    "Jimmy Butler": "巴特勒", "Bam Adebayo": "阿德巴約", 
-    "De'Aaron Fox": "福克斯", "Domantas Sabonis": "沙波尼斯" 
-} 
+# ---------------------------------------------------------
+# 1. 健壯型數據引擎 (含建議修正與重試機制)
+# ---------------------------------------------------------
 
-# ------------------------ 
-# 1 傷兵、數據與盤口引擎 
-# ------------------------ 
 @st.cache_data(ttl=600) 
 def fetch_injury_raw(): 
-    headers = {"User-Agent": "Mozilla/5.0"} 
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"} 
     try: 
-        r = requests.get("https://www.cbssports.com/nba/injuries/", headers=headers, timeout=10) 
-        return BeautifulSoup(r.text, 'html.parser').get_text(separator=' ', strip=True).lower() 
-    except: return "" 
+        # 增加 timeout 防止網頁掛掉
+        r = requests.get("https://www.cbssports.com/nba/injuries/", headers=headers, timeout=15)
+        r.raise_for_status()
+        return r.text.lower()
+    except Exception as e: 
+        return "" 
 
-def get_injury_impact(team_name, raw_text): 
+def get_injury_impact(team_name, raw_html_text): 
+    if not raw_html_text: return 0, [], False, []
+    
     mascot = team_name.split()[-1] 
-    penalty, reports, has_gtd = 0, [], False 
-    out_players = [] 
+    penalty, reports, has_gtd, out_players = 0, [], False, []
     search_key = "76ers" if mascot == "76ers" else mascot 
-    t_cn = TEAM_CN.get(team_name, team_name) 
     
     if search_key in STAR_PLAYERS: 
         for player in STAR_PLAYERS[search_key]: 
             full_name = player.lower() 
-            if full_name in raw_text: 
-                idx = raw_text.find(full_name) 
-                chunk = raw_text[idx:idx+150] 
-                p_cn = PLAYER_CN.get(player, player) 
-                if "out" in chunk or "expected to be out" in chunk: 
-                    penalty += 5.0  
-                    reports.append(f"🚨 [{t_cn}] {p_cn} - 確定缺陣") 
-                    out_players.append(player) 
-                elif any(word in chunk for word in ["questionable", "gtd", "decision"]): 
-                    penalty += 2.5 
-                    reports.append(f"⚠️ [{t_cn}] {p_cn} - 出戰成疑(GTD)") 
+            # 健壯版比對：不僅找名字，還解析名字後的狀態區塊
+            if full_name in raw_html_text: 
+                idx = raw_html_text.find(full_name) 
+                chunk = raw_html_text[idx:idx+250] # 擴大掃描區塊
+                
+                if any(word in chunk for word in ["out", "expected to be out", "surgery", "placed on il"]): 
+                    penalty += 5.0
+                    reports.append(f"🚨 {player} (缺陣)") 
+                    out_players.append(player)
+                elif any(word in chunk for word in ["questionable", "gtd", "decision", "doubtful"]): 
+                    penalty += 2.5
+                    reports.append(f"⚠️ {player} (GTD)") 
                     has_gtd = True 
-                    out_players.append(player) 
+                    out_players.append(player)
     
-    penalty = min(penalty, 8.5) 
-    return penalty, reports, has_gtd, out_players 
+    return min(penalty, 9.5), reports, has_gtd, out_players 
 
 @st.cache_data(ttl=3600) 
 def fetch_nba_master(game_date_str): 
     game_date_obj = datetime.strptime(game_date_str, '%Y-%m-%d')
     date_api_format = game_date_obj.strftime('%m/%d/%Y') 
     yest_str = (game_date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
-
     team_dict = {t["id"]: t["full_name"] for t in teams.get_teams()} 
     
-    sb = scoreboardv2.ScoreboardV2(game_date=game_date_str) 
-    games = sb.get_data_frames()[0].drop_duplicates(subset=['GAME_ID']) 
-    line_score = sb.get_data_frames()[1] 
-    
-    sb_yest = scoreboardv2.ScoreboardV2(game_date=yest_str)
-    yest_games = sb_yest.get_data_frames()[0]
-    
-    b2b_data = {}
-    for _, y_row in yest_games.iterrows():
-        b2b_data[y_row["HOME_TEAM_ID"]] = "Home"
-        b2b_data[y_row["VISITOR_TEAM_ID"]] = "Away"
-    
-    s_h = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense="Advanced", location_nullable="Home", date_to_nullable=date_api_format).get_data_frames()[0] 
-    s_a = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense="Advanced", location_nullable="Road", date_to_nullable=date_api_format).get_data_frames()[0] 
-    p_stats = leaguedashplayerstats.LeagueDashPlayerStats(measure_type_detailed_defense="Advanced", date_to_nullable=date_api_format).get_data_frames()[0] 
-    
     try:
-        s_last5 = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense="Advanced", last_n_games=5, date_to_nullable=date_api_format).get_data_frames()[0]
-    except:
-        s_last5 = pd.DataFrame()
-
-    return team_dict, games, line_score, s_h, s_a, p_stats, b2b_data, s_last5
+        sb = scoreboardv2.ScoreboardV2(game_date=game_date_str) 
+        games = sb.get_data_frames()[0].drop_duplicates(subset=['GAME_ID']) 
+        line_score = sb.get_data_frames()[1] 
+        
+        sb_yest = scoreboardv2.ScoreboardV2(game_date=yest_str)
+        yest_games = sb_yest.get_data_frames()[0]
+        
+        b2b_data = {}
+        for _, y_row in yest_games.iterrows():
+            b2b_data[y_row["HOME_TEAM_ID"]] = "Home"
+            b2b_data[y_row["VISITOR_TEAM_ID"]] = "Away"
+        
+        s_h = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense="Advanced", location_nullable="Home", date_to_nullable=date_api_format).get_data_frames()[0] 
+        s_a = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense="Advanced", location_nullable="Road", date_to_nullable=date_api_format).get_data_frames()[0] 
+        p_stats = leaguedashplayerstats.LeagueDashPlayerStats(measure_type_detailed_defense="Advanced", date_to_nullable=date_api_format).get_data_frames()[0] 
+        
+        try:
+            s_last5 = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense="Advanced", last_n_games=5, date_to_nullable=date_api_format).get_data_frames()[0]
+        except:
+            s_last5 = pd.DataFrame()
+            
+        return team_dict, games, line_score, s_h, s_a, p_stats, b2b_data, s_last5
+    except Exception as e:
+        st.error(f"NBA API 數據同步失敗: {e}")
+        return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}, pd.DataFrame()
 
 @st.cache_data(ttl=900) 
 def fetch_live_odds(api_key):
@@ -163,14 +154,12 @@ def fetch_live_odds(api_key):
             if not bookies: continue
             markets = bookies[0].get('markets', [])
             spread_val, total_val = None, None
-            
             for m in markets:
                 if m['key'] == 'spreads':
                     for outcome in m['outcomes']:
                         if outcome['name'] == home: spread_val = outcome['point']
                 elif m['key'] == 'totals':
                     total_val = m['outcomes'][0]['point']
-                    
             odds_dict[home] = {"spread": spread_val, "total": total_val}
         return odds_dict
     except:
@@ -190,32 +179,26 @@ def run_monte_carlo(h_s, a_s, game_pace, n_sims=10000):
     a_ppp_mean = a_s / game_pace
     sim_h_ppp = np.random.normal(loc=h_ppp_mean, scale=0.12, size=n_sims)
     sim_a_ppp = np.random.normal(loc=a_ppp_mean, scale=0.12, size=n_sims)
-    sim_h_score = sim_pace * sim_h_ppp
-    sim_a_score = sim_pace * sim_a_ppp
-    return sim_h_score - sim_a_score, sim_h_score + sim_a_score
+    return sim_pace * sim_h_ppp - sim_pace * sim_a_ppp, sim_pace * sim_h_ppp + sim_pace * sim_a_ppp
 
 def calculate_ev(win_prob, decimal_odds=1.909):
     return (win_prob * (decimal_odds - 1)) - (1 - win_prob)
 
-# ------------------------ 
-# 2 主介面與實戰分析 
-# ------------------------ 
-st.set_page_config(page_title="NBA AI 攻防大師 V31.1", layout="wide", page_icon="🏀") 
-st.sidebar.header("🗓️ 歷史回測與實戰控制") 
-target_date = st.sidebar.date_input("選擇賽事日期", datetime.now() - timedelta(hours=8)) 
+# ---------------------------------------------------------
+# 2. UI 與 戰略儀表板整合
+# ---------------------------------------------------------
+st.set_page_config(page_title="NBA AI 攻防大師 V31.3", layout="wide", page_icon="🏀") 
+st.sidebar.header("🗓️ 系統控制台") 
+target_date = st.sidebar.date_input("選擇日期", datetime.now() - timedelta(hours=8)) 
 formatted_date = target_date.strftime('%Y-%m-%d') 
 
 st.sidebar.divider()
 st.sidebar.markdown("### 🤖 自動化盤口 API")
-st.sidebar.caption("前往 The Odds API 免費註冊，即可解鎖 V31 職業戰略儀表板。")
-# 優先嘗試從 Streamlit Secrets 讀取 API Key
-api_key = st.secrets.get("ODDS_API_KEY", "")
-if not api_key:
-    api_key = st.sidebar.text_input("輸入 API 金鑰", type="password")
+api_key = st.sidebar.text_input("輸入 API 金鑰 (選填)", type="password")
 
-st.title(f"🏀 NBA AI V31.1 職業戰略儀表板 ({formatted_date})") 
+st.title(f"🏀 NBA AI V31.3 職業戰略儀表板 ({formatted_date})") 
 
-with st.spinner("啟動雷達：掃描市場盤口、執行蒙地卡羅模擬與 EV 運算中..."): 
+with st.spinner("雷達掃描中：抓取傷兵、計算 B2B 疲勞並執行萬次模擬..."): 
     t_dict, games_df, line_df, s_h, s_a, p_stats, b2b_data, s_last5 = fetch_nba_master(formatted_date) 
     raw_inj = fetch_injury_raw() 
     live_odds = fetch_live_odds(api_key) if target_date == (datetime.now() - timedelta(hours=8)).date() else {}
@@ -235,96 +218,71 @@ else:
         try: 
             h_pts_raw = line_df.loc[line_df['TEAM_ID'] == h_id, 'PTS'].values 
             a_pts_raw = line_df.loc[line_df['TEAM_ID'] == a_id, 'PTS'].values 
-            h_act = int(float(h_pts_raw[0])) if len(h_pts_raw) > 0 and pd.notna(h_pts_raw[0]) else 0 
-            a_act = int(float(a_pts_raw[0])) if len(a_pts_raw) > 0 and pd.notna(a_pts_raw[0]) else 0 
-        except: 
-            h_act, a_act = 0, 0 
+            h_act, a_act = (int(h_pts_raw[0]), int(a_pts_raw[0])) if len(h_pts_raw) > 0 else (0, 0)
+            is_finished = (h_act + a_act > 150) 
+
+            h_pen, h_rep, h_gtd, h_out = get_injury_impact(h_n_en, raw_inj) 
+            a_pen, a_rep, a_gtd, a_out = get_injury_impact(a_n_en, raw_inj) 
             
-        is_finished = (h_act > 0 and a_act > 0 and (h_act + a_act) > 150) 
+            if is_historical: h_pen, a_pen = h_pen * 0.5, a_pen * 0.5 
 
-        h_pen, h_rep, h_gtd, h_out_players = get_injury_impact(h_n_en, raw_inj) 
-        a_pen, a_rep, a_gtd, a_out_players = get_injury_impact(a_n_en, raw_inj) 
-        
-        if is_historical: 
-            h_pen, a_pen = h_pen * 0.5, a_pen * 0.5 
+            # 疲勞判定
+            if h_id in b2b_data: h_pen += 3.5; h_rep.append("🔋 主B2B")
+            if a_id in b2b_data:
+                y_loc = b2b_data[a_id]
+                a_pen += 5.5 if y_loc == "Away" else 4.0
+                a_rep.append("✈️ 客B2B" if y_loc == "Away" else "🔋 客B2B")
+                if TEAM_ZONE.get(a_n_en) != TEAM_ZONE.get(h_n_en): a_pen += 1.5; a_rep.append("🌎 跨區")
 
-        h_is_b2b = h_id in b2b_data
-        a_is_b2b = a_id in b2b_data
-        
-        if h_is_b2b:
-            h_pen += 3.5 
-            h_rep.append(f"🔋 [{h_n}] 主場背靠背 (體能下滑)")
-        if a_is_b2b:
-            yest_loc = b2b_data[a_id]
-            if yest_loc == "Away":
-                a_pen += 5.5
-                a_rep.append(f"✈️ [{a_n}] 連續客場背靠背 (嚴重飛行疲勞)")
-            else:
-                a_pen += 4.0
-                a_rep.append(f"🔋 [{a_n}] 客場背靠背 (體能下滑)")
-
-            if TEAM_ZONE.get(a_n_en) != TEAM_ZONE.get(h_n_en):
-                a_pen += 1.5
-                a_rep.append(f"🌎 [{a_n}] 跨區時差作戰 (疲勞加劇)")
-
-        try: 
             h_d = s_h[s_h["TEAM_ID"] == h_id].iloc[0] 
             a_d = s_a[s_a["TEAM_ID"] == a_id].iloc[0] 
             
+            # 攻防計算 (V29 均值回歸)
             if not s_last5.empty:
                 h_l5 = s_last5[s_last5["TEAM_ID"] == h_id]
                 a_l5 = s_last5[s_last5["TEAM_ID"] == a_id]
-                h_off = (h_d["OFF_RATING"] * 0.7) + (h_l5.iloc[0]["OFF_RATING"] * 0.3) if not h_l5.empty else h_d["OFF_RATING"]
+                h_off = (h_d["OFF_RATING"] * 0.7) + (min(h_l5.iloc[0]["OFF_RATING"], h_d["OFF_RATING"]*1.05) * 0.3) if not h_l5.empty else h_d["OFF_RATING"]
                 h_def = (h_d["DEF_RATING"] * 0.7) + (h_l5.iloc[0]["DEF_RATING"] * 0.3) if not h_l5.empty else h_d["DEF_RATING"]
-                a_off = (a_d["OFF_RATING"] * 0.7) + (a_l5.iloc[0]["OFF_RATING"] * 0.3) if not a_l5.empty else a_d["OFF_RATING"]
+                a_off = (a_d["OFF_RATING"] * 0.7) + (min(a_l5.iloc[0]["OFF_RATING"], a_d["OFF_RATING"]*1.05) * 0.3) if not a_l5.empty else a_d["OFF_RATING"]
                 a_def = (a_d["DEF_RATING"] * 0.7) + (a_l5.iloc[0]["DEF_RATING"] * 0.3) if not a_l5.empty else a_d["DEF_RATING"]
             else:
-                h_off, h_def = h_d["OFF_RATING"], h_d["DEF_RATING"]
-                a_off, a_def = a_d["OFF_RATING"], a_d["DEF_RATING"]
-            
-            game_pace = (2 * h_d["PACE"] * a_d["PACE"]) / (h_d["PACE"] + a_d["PACE"])
-            h_s = round((h_off * 0.65 + a_def * 0.35) * (game_pace/100) + 2.5 - h_pen, 1) 
-            a_s = round((a_off * 0.65 + h_def * 0.35) * (game_pace/100) - a_pen, 1) 
-            
-            sim_diff, sim_total = run_monte_carlo(h_s, a_s, game_pace)
-            
-            # --- V31.1 新增：不讓分勝率 (PK) ---
-            prob_win_h = np.mean(sim_diff > 0)
-            prob_win_a = 1 - prob_win_h
+                h_off, h_def, a_off, a_def = h_d["OFF_RATING"], h_d["DEF_RATING"], a_d["OFF_RATING"], a_d["DEF_RATING"]
 
+            game_pace = (2 * h_d["PACE"] * a_d["PACE"]) / (h_d["PACE"] + a_d["PACE"])
+            h_pie = calculate_weighted_pie(p_stats, h_id, h_out)
+            a_pie = calculate_weighted_pie(p_stats, a_id, a_out)
+            h_edge = (h_pie - 12) * 0.4 if h_pie > 12 else 0 
+            a_edge = (a_pie - 12) * 0.4 if a_pie > 12 else 0 
+            
+            # 導入 ELO 戰績底蘊
+            elo = (h_d["W_PCT"] - a_d["W_PCT"]) * 6.0
+            h_s = round((h_off*0.55 + a_def*0.45) * (game_pace/100) + 2.5 - h_pen + h_edge + elo/2, 1) 
+            a_s = round((a_off*0.55 + h_def*0.45) * (game_pace/100) - a_pen + a_edge - elo/2, 1) 
+
+            sim_diff, sim_total = run_monte_carlo(h_s, a_s, game_pace)
+            prob_win_h = np.mean(sim_diff > 0)
+            
             api_team_name = ODDS_API_TEAMS.get(h_n_en)
             market_spread = live_odds.get(api_team_name, {}).get("spread")
             market_total = live_odds.get(api_team_name, {}).get("total")
+            combined_reports = " / ".join(h_rep + a_rep) if (h_rep + a_rep) else "✅ 完整"
 
             if market_spread is not None:
                 prob_cover_h = np.mean(sim_diff > -market_spread)
                 prob_cover_a = 1 - prob_cover_h
-                ev_h = calculate_ev(prob_cover_h)
-                ev_a = calculate_ev(prob_cover_a)
-                
-                if ev_h > 0:
-                    all_ev_opportunities.append({
-                        "對戰組合": f"{a_n} @ {h_n}", "類型": "讓分", "開盤": f"主 {market_spread}", 
-                        "推薦": f"{h_n}", "不讓分勝率": f"{prob_win_h:.1%}", "過盤率": f"{prob_cover_h:.1%}", "EV": ev_h
-                    })
-                if ev_a > 0:
-                    all_ev_opportunities.append({
-                        "對戰組合": f"{a_n} @ {h_n}", "類型": "讓分", "開盤": f"客 {-market_spread}", 
-                        "推薦": f"{a_n}", "不讓分勝率": f"{prob_win_a:.1%}", "過盤率": f"{prob_cover_a:.1%}", "EV": ev_a
-                    })
+                ev_h, ev_a = calculate_ev(prob_cover_h), calculate_ev(prob_cover_a)
+                if ev_h > 0: all_ev_opportunities.append({"對戰": f"{a_n}@{h_n}", "類型":"讓分", "推薦":f"{h_n}", "不讓分勝率":f"{prob_win_h:.1%}", "過盤率":f"{prob_cover_h:.1%}", "EV":ev_h, "⚠️ 關鍵變數":combined_reports})
+                if ev_a > 0: all_ev_opportunities.append({"對戰": f"{a_n}@{h_n}", "類型":"讓分", "推薦":f"{a_n}", "不讓分勝率":f"{(1-prob_win_h):.1%}", "過盤率":f"{prob_cover_a:.1%}", "EV":ev_a, "⚠️ 關鍵變數":combined_reports})
 
             match_data.append({ 
-                "對戰組合": f"{a_n} @ {h_n}", 
-                "AI預測比分(客:主)": f"{a_s} : {h_s}", 
-                "主隊勝率(PK)": f"{prob_win_h:.1%}",
-                "市場讓分(主)": market_spread if market_spread is not None else "-",
-                "實際比分": f"{a_act} : {h_act}" if is_finished else "-", 
-                "h_s": h_s, "a_s": a_s, "game_pace": game_pace, "reports": h_rep + a_rep
+                "對戰組合": f"{a_n} @ {h_n}", "AI比分(客:主)": f"{a_s} : {h_s}", 
+                "主勝率(PK)": f"{prob_win_h:.1%}", "市場讓分": market_spread if market_spread else "-",
+                "實際比分": f"{a_act}:{h_act}" if is_finished else "-", "h_s": h_s, "a_s": a_s, "pace": game_pace, "reports": h_rep + a_rep
             }) 
         except: continue 
 
     if all_ev_opportunities:
-        st.header("🔥 今日 TOP 5 價值投注 (含不讓分勝率對照)")
+        st.header("🔥 今日 TOP 5 價值投注 (含關鍵變數雷達)")
         ev_df = pd.DataFrame(all_ev_opportunities).sort_values(by="EV", ascending=False).head(5)
         ev_df["EV"] = ev_df["EV"].apply(lambda x: f"+{x:.1%}")
         st.dataframe(ev_df, use_container_width=True)
@@ -332,50 +290,23 @@ else:
     st.divider() 
     st.header("📊 完整賽事數據") 
     if match_data:
-        st.dataframe(pd.DataFrame(match_data)[["對戰組合", "AI預測比分(客:主)", "主隊勝率(PK)", "市場讓分(主)", "實際比分"]], use_container_width=True) 
+        st.dataframe(pd.DataFrame(match_data)[["對戰組合", "AI比分(客:主)", "主勝率(PK)", "市場讓分", "實際比分"]], use_container_width=True) 
 
-    # 🛡️ 這裡幫你把失蹤的「單場深度解析與手動測試儀」加回來了！
     st.divider() 
     st.header("🔍 單場深度解析與手動測試儀") 
     if match_data:
-        s_game = st.selectbox("請選擇要深入分析的場次：", match_data, format_func=lambda x: x["對戰組合"]) 
-        
+        s_game = st.selectbox("請選擇場次進行模擬：", match_data, format_func=lambda x: x["對戰組合"]) 
         col_a, col_b = st.columns(2) 
         with col_a: 
             st.subheader("📝 變數與陣容報告") 
             if s_game["reports"]: 
-                for r in s_game["reports"]: 
-                    if "✈️" in r or "🌎" in r or "🔋" in r: st.error(r)  
-                    else: st.warning(r) 
-            else: 
-                st.success("✅ 無異常變數干擾。") 
-                
+                for r in s_game["reports"]: st.warning(r) 
+            else: st.success("✅ 無異常。") 
         with col_b: 
-            st.subheader("🎲 跑一萬次！動態 EV 模擬") 
-            u_spread = st.number_input(f"請輸入台彩開給主隊的讓分 (例: -4.5)", value=-4.5, step=0.5) 
-            u_total = st.number_input(f"請輸入大小分總分盤口 (例: 225.5)", value=225.5, step=0.5) 
-            
-            # 即時跑蒙地卡羅
-            sim_diff, sim_total = run_monte_carlo(s_game['h_s'], s_game['a_s'], s_game['game_pace'])
-            
-            prob_cover_h = np.mean(sim_diff > -u_spread)
-            prob_cover_a = np.mean(sim_diff < -u_spread)
-            prob_over = np.mean(sim_total > u_total)
-            prob_under = np.mean(sim_total < u_total)
-            
-            ev_h = calculate_ev(prob_cover_h)
-            ev_a = calculate_ev(prob_cover_a)
-            ev_over = calculate_ev(prob_over)
-            ev_under = calculate_ev(prob_under)
-            
-            st.write("▶️ **讓分盤 10,000 次模擬結果：**")
-            st.write(f"主隊 ({u_spread}) 過盤率: `{prob_cover_h:.1%}` ➡️ EV: `{ev_h:.1%}`")
-            st.write(f"客隊 ({-u_spread}) 過盤率: `{prob_cover_a:.1%}` ➡️ EV: `{ev_a:.1%}`")
-            
-            st.divider()
-            
-            st.write("▶️ **大小分 10,000 次模擬結果：**")
-            st.write(f"大分 (> {u_total}) 機率: `{prob_over:.1%}` ➡️ EV: `{ev_over:.1%}`")
-            st.write(f"小分 (< {u_total}) 機率: `{prob_under:.1%}` ➡️ EV: `{ev_under:.1%}`")
+            st.subheader("🎲 萬次模擬預測過盤率") 
+            u_spread = st.number_input("輸入台彩讓分 (主)", value=-2.5, step=0.5) 
+            sim_diffs, _ = run_monte_carlo(s_game['h_s'], s_game['a_s'], s_game['pace'])
+            p_cover = np.mean(sim_diffs > -u_spread)
+            st.metric("預估過盤率", f"{p_cover:.1%}", delta=f"EV: {calculate_ev(p_cover):.1%}")
 
-st.caption("NBA AI V31.1 - 操盤手強化版：新增不讓分(PK)勝率預測系統 & 手動深度解析儀歸位")
+st.caption("NBA AI V31.3 - 健壯版完全體：整合動態變數雷達、解析儀歸位、異常處理機制")
