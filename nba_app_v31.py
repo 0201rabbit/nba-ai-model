@@ -8,6 +8,7 @@ from nba_api.stats.static import teams
 from datetime import datetime, timedelta 
 import json
 import os
+import time
 
 # ------------------------ 
 # 0 核心配置與中英對照庫 
@@ -71,7 +72,7 @@ PLAYER_CN = {
     "LeBron James": "詹姆斯", "Anthony Davis": "戴維斯", "D'Angelo Russell": "羅素", "Austin Reaves": "里夫斯", 
     "Nikola Jokic": "約基奇", "Jamal Murray": "莫瑞", "Aaron Gordon": "高登", "Michael Porter Jr.": "小波特", 
     "Jayson Tatum": "塔圖姆", "Jaylen Brown": "布朗", "Kristaps Porzingis": "波辛吉斯", "Derrick White": "懷特", "Jrue Holiday": "哈勒戴", 
-    "Luka Doncic": "唐西奇", "Kyrie Irving": "厄文", "Dereck Lively": "萊夫利", 
+    "Luka Doncic": "唐西奇", "厄文": "厄文", "Dereck Lively": "萊夫利", 
     "Shai Gilgeous-Alexander": "亞歷山大", "Chet Holmgren": "霍姆格倫", "Jalen Williams": "威廉斯", 
     "Anthony Edwards": "愛德華茲", "Rudy Gobert": "戈貝爾", "Karl-Anthony Towns": "唐斯", 
     "Giannis Antetokounmpo": "字母哥", "Damian Lillard": "里拉德", "Khris Middleton": "米德爾頓", 
@@ -152,7 +153,6 @@ def fetch_nba_master(game_date_str):
 
     return team_dict, games, line_score, s_h, s_a, p_stats, b2b_data, s_last5
 
-# 🛡️ 每日 Odds 快取與 API 額度擷取機制
 def fetch_live_odds(api_key, target_date_str):
     if not api_key: return {}
     
@@ -233,11 +233,10 @@ def run_monte_carlo(h_s, a_s, game_pace, n_sims=10000):
 def calculate_ev(win_prob, decimal_odds=1.909):
     return (win_prob * (decimal_odds - 1)) - (1 - win_prob)
 
-
 # ------------------------ 
 # 2 主介面與實戰分析 
 # ------------------------ 
-st.set_page_config(page_title="NBA AI 攻防大師 V31.1", layout="wide", page_icon="🏀") 
+st.set_page_config(page_title="NBA AI 攻防大師 V31.2", layout="wide", page_icon="🏀") 
 st.sidebar.header("🗓️ 歷史回測與實戰控制") 
 target_date = st.sidebar.date_input("選擇賽事日期", datetime.now() - timedelta(hours=8)) 
 formatted_date = target_date.strftime('%Y-%m-%d') 
@@ -245,6 +244,19 @@ formatted_date = target_date.strftime('%Y-%m-%d')
 st.sidebar.divider()
 st.sidebar.markdown("### 🤖 The Odds API 控制台")
 api_key = st.sidebar.text_input("輸入 API 金鑰 (選填)", type="password")
+
+# 🔄 新增：強制更新快取按鈕
+if st.sidebar.button("🔄 強制更新盤口 (清除今日快取)"):
+    cache_file = f"odds_{formatted_date}.json"
+    if os.path.exists(cache_file):
+        os.remove(cache_file)
+        st.sidebar.success(f"✅ 已清除 {formatted_date} 的快取！正在重新載入...")
+        time.sleep(1)
+        st.rerun()
+    else:
+        st.sidebar.warning(f"⚠️ 尚未建立 {formatted_date} 的快取檔案，系統會自動抓取。")
+
+st.sidebar.divider()
 
 # 📊 側邊欄：API 額度餘額顯示
 if os.path.exists("api_quota.json"):
@@ -256,7 +268,7 @@ if os.path.exists("api_quota.json"):
 else:
     st.sidebar.info("輸入金鑰並啟動一次查詢後，即可顯示 API 餘額。")
 
-st.title(f"🏀 NBA AI V31 職業盤: 蒙地卡羅與 EV 決策引擎 ({formatted_date})") 
+st.title(f"🏀 NBA AI V31.2 職業盤: 蒙地卡羅與 EV 決策引擎 ({formatted_date})") 
 
 with st.spinner("啟動 10,000 次蒙地卡羅迴圈模擬與期望值運算中..."): 
     t_dict, games_df, line_df, s_h, s_a, p_stats, b2b_data, s_last5 = fetch_nba_master(formatted_date) 
@@ -505,4 +517,4 @@ else:
     else: 
         st.warning("🚨 目前抓取不到有效場次進行分析。") 
 
-st.caption("NBA AI V31.1 - 職業集團專用：Monte Carlo 蒙地卡羅萬次模擬與每日快取 + API 額度監控系統")
+st.caption("NBA AI V31.2 - 職業集團專用：Monte Carlo 蒙地卡羅萬次模擬與每日快取 + 手動更新機制")
