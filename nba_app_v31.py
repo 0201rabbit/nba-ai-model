@@ -3,7 +3,7 @@ import pandas as pd
 import requests 
 import numpy as np
 import time
-from nba_api.stats.endpoints import leaguedashteamstats
+from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2
 from datetime import datetime, timedelta 
 
 # ---------------------------------------------------------
@@ -42,15 +42,16 @@ STAR_PLAYERS = {
 } 
 
 # ---------------------------------------------------------
-# 1. 輕量化穩定數據引擎 (V32.5 最終耐力版)
+# 1. 數據引擎：融合 V30 成功路徑與 V32 耐力 (V32.6)
 # ---------------------------------------------------------
 
 @st.cache_data(ttl=10800) 
 def fetch_injury_raw(): 
     try: 
+        # 參考 V30 使用較單純的 Headers
         r = requests.get("https://www.cbssports.com/nba/injuries/", 
-                         headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"}, 
-                         timeout=15)
+                         headers={"User-Agent": "Mozilla/5.0"}, 
+                         timeout=10)
         return r.text.lower()
     except: return ""
 
@@ -75,49 +76,39 @@ def fetch_nba_lite(game_date_str):
     date_obj = datetime.strptime(game_date_str, '%Y-%m-%d')
     date_api = date_obj.strftime('%m/%d/%Y') 
     
-    # 模擬最強悍的真人手機瀏覽器指紋
+    # 🛡️ 關鍵精進：參考 V30 穩定 Headers，不使用過於複雜的手機模擬以免觸發 403
     headers = {
         'Host': 'stats.nba.com',
         'Connection': 'keep-alive',
         'x-nba-stats-origin': 'stats',
         'x-nba-stats-token': 'true',
         'Referer': 'https://www.nba.com/',
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     }
     
     try:
-        with requests.Session() as session:
-            # 增加隨機延遲，模擬真人打開網頁的節奏
-            time.sleep(np.random.uniform(2.5, 4.5))
-            
-            # 第一步：嘗試抓取賽程 (Timeout 拉長到 60 秒)
-            sb_url = f"https://stats.nba.com/stats/scoreboardv2?DayOffset=0&LeagueID=00&gameDate={date_api}"
-            r = session.get(sb_url, headers=headers, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            res = data['resultSets']
-            games_df = pd.DataFrame(res[0]['rowSet'], columns=res[0]['headers'])
-            line_score = pd.DataFrame(res[1]['rowSet'], columns=res[1]['headers'])
+        # 🛡️ 參考 V30 使用物件式呼叫，而非手動拼網址
+        sb = scoreboardv2.ScoreboardV2(game_date=date_api, headers=headers, timeout=60)
+        games_df = sb.get_data_frames()[0]
+        line_score = sb.get_data_frames()[1]
 
-            # 🛡️ 備援機制：如果抓不到今日，主動嘗試昨日 (熱火黃蜂)
-            if games_df.empty:
-                prev_api = (date_obj - timedelta(days=1)).strftime('%m/%d/%Y')
-                sb_url_prev = f"https://stats.nba.com/stats/scoreboardv2?DayOffset=0&LeagueID=00&gameDate={prev_api}"
-                r_prev = session.get(sb_url_prev, headers=headers, timeout=60)
-                res_prev = r_prev.json()['resultSets']
-                games_df = pd.DataFrame(res_prev[0]['rowSet'], columns=res_prev[0]['headers'])
-                line_score = pd.DataFrame(res_prev[1]['rowSet'], columns=res_prev[1]['headers'])
-                st.sidebar.info("💡 偵測到當日數據尚未更新，已載入昨日賽程。")
+        # 備援機制：今日無數據載入昨日
+        if games_df.empty:
+            prev_api = (date_obj - timedelta(days=1)).strftime('%m/%d/%Y')
+            sb_yest = scoreboardv2.ScoreboardV2(game_date=prev_api, headers=headers, timeout=60)
+            games_df = sb_yest.get_data_frames()[0]
+            line_score = sb_yest.get_data_frames()[1]
+            st.sidebar.info("💡 載入備援數據 (昨日賽程)")
 
-        # 抓取球隊數據 (Timeout 同步拉長)
+        time.sleep(1.5) # V30 的穩定間隔
+        
+        # 同樣使用物件式呼叫
         ts = leaguedashteamstats.LeagueDashTeamStats(date_to_nullable=date_api, headers=headers, timeout=60)
         stats_df = ts.get_data_frames()[0]
         
         return games_df, line_score, stats_df
     except Exception as e:
-        st.sidebar.error(f"⚠️ NBA 伺服器忙碌中，請稍微等待：{str(e)}")
+        st.sidebar.error(f"⚠️ 連線異常: {str(e)}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=900) 
@@ -131,7 +122,7 @@ def fetch_live_odds(api_key):
     except: return {}
 
 # ---------------------------------------------------------
-# 2. 蒙地卡羅萬次模擬引擎
+# 2. 蒙地卡羅萬次模擬引擎 (維持 V32 邏輯)
 # ---------------------------------------------------------
 def run_monte_carlo(h_pts, a_pts, n_sims=10000):
     sim_h = np.random.normal(loc=h_pts, scale=12.0, size=n_sims)
@@ -142,28 +133,27 @@ def calculate_ev(win_prob, odds=1.90):
     return (win_prob * (odds - 1)) - (1 - win_prob)
 
 # ---------------------------------------------------------
-# 3. UI 介面設定
+# 3. UI 介面 (保持原本 V32.5 佈局)
 # ---------------------------------------------------------
-st.set_page_config(page_title="NBA AI V32.5 終極耐力版", layout="wide", page_icon="🏀") 
+st.set_page_config(page_title="NBA AI V32.6 精進版", layout="wide", page_icon="🏀") 
 
 st.sidebar.header("🗓️ 歷史回測與實戰控制") 
 target_date = st.sidebar.date_input("選擇賽事日期", datetime.now() - timedelta(hours=8)) 
 formatted_date = target_date.strftime('%Y-%m-%d') 
 
 st.sidebar.divider()
-st.sidebar.markdown("### 🤖 自動化盤口分析")
 api_key = st.sidebar.text_input("輸入 API 金鑰 (選填)", type="password")
 
 st.title(f"🏀 NBA AI V32 職業盤: 蒙地卡羅與 EV 決策引擎 ({formatted_date})") 
 
-with st.spinner("啟動穩定引擎：正在排隊領取數據 (預計等待 30-60 秒)..."): 
+with st.spinner("啟動穩定引擎：正在參考 V30 路徑領取數據..."): 
     games_df, line_df, stats_df = fetch_nba_lite(formatted_date) 
     raw_inj = fetch_injury_raw() 
     live_odds = fetch_live_odds(api_key) if api_key else {}
 
 if games_df.empty: 
     st.warning(f"📅 找不到 {formatted_date} 的賽程數據。")
-    st.info("提示：NBA API 伺服器正在排隊，請按 'C' 清除快取，並嘗試使用手機網路連線。")
+    st.info("提示：若手機 V30 能連線，代表 NBA 伺服器對 V30 的物件請求格式較寬容。已將 V32.6 調校至相同格式。")
 else:
     match_data, hit_count, total_finished = [], 0, 0
     t_dict = dict(zip(stats_df['TEAM_ID'], stats_df['TEAM_NAME'])) if not stats_df.empty else {}
@@ -251,4 +241,4 @@ else:
             st.divider()
             st.write(f"大分率: `{po:.1%}` | 小分率: `{pu:.1%}`")
 
-st.caption("NBA AI V32.5 - 最終耐力版：60秒等待、手機指紋模擬、自動日期備援")
+st.caption("NBA AI V32.6 - 參考 V30 成功基因：回歸物件式呼叫、標準 Headers、60秒耐力")
