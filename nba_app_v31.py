@@ -7,7 +7,7 @@ from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2
 from datetime import datetime, timedelta 
 
 # ---------------------------------------------------------
-# 0. 核心配置與對照庫
+# 0. 核心配置與對照庫 (維持 V32 輕量版)
 # ---------------------------------------------------------
 TEAM_CN = { 
     "Atlanta Hawks": "老鷹", "Boston Celtics": "塞爾提克", "Brooklyn Nets": "籃網", 
@@ -42,13 +42,13 @@ STAR_PLAYERS = {
 } 
 
 # ---------------------------------------------------------
-# 1. 數據引擎：融合 V30 成功路徑與 V32 耐力 (V32.6)
+# 1. 數據引擎：V32.7 回歸 V30 穩定模式
 # ---------------------------------------------------------
 
 @st.cache_data(ttl=10800) 
 def fetch_injury_raw(): 
     try: 
-        # 參考 V30 使用較單純的 Headers
+        # 使用最簡單的 Header
         r = requests.get("https://www.cbssports.com/nba/injuries/", 
                          headers={"User-Agent": "Mozilla/5.0"}, 
                          timeout=10)
@@ -76,53 +76,44 @@ def fetch_nba_lite(game_date_str):
     date_obj = datetime.strptime(game_date_str, '%Y-%m-%d')
     date_api = date_obj.strftime('%m/%d/%Y') 
     
-    # 🛡️ 關鍵精進：參考 V30 穩定 Headers，不使用過於複雜的手機模擬以免觸發 403
+    # 🛡️ 核心：使用 V30 認證過的穩定 Headers
     headers = {
         'Host': 'stats.nba.com',
-        'Connection': 'keep-alive',
-        'x-nba-stats-origin': 'stats',
-        'x-nba-stats-token': 'true',
-        'Referer': 'https://www.nba.com/',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://www.nba.com/',
     }
     
     try:
-        # 🛡️ 參考 V30 使用物件式呼叫，而非手動拼網址
-        sb = scoreboardv2.ScoreboardV2(game_date=date_api, headers=headers, timeout=60)
+        # 1. 直接呼叫物件 (V30 模式)
+        sb = scoreboardv2.ScoreboardV2(game_date=date_api, headers=headers, timeout=30)
         games_df = sb.get_data_frames()[0]
         line_score = sb.get_data_frames()[1]
 
-        # 備援機制：今日無數據載入昨日
+        # 備援：若今日無數據載入昨日
         if games_df.empty:
             prev_api = (date_obj - timedelta(days=1)).strftime('%m/%d/%Y')
-            sb_yest = scoreboardv2.ScoreboardV2(game_date=prev_api, headers=headers, timeout=60)
+            sb_yest = scoreboardv2.ScoreboardV2(game_date=prev_api, headers=headers, timeout=30)
             games_df = sb_yest.get_data_frames()[0]
             line_score = sb_yest.get_data_frames()[1]
-            st.sidebar.info("💡 載入備援數據 (昨日賽程)")
 
-        time.sleep(1.5) # V30 的穩定間隔
+        time.sleep(2.0) # 給伺服器喘息空間
         
-        # 同樣使用物件式呼叫
-        ts = leaguedashteamstats.LeagueDashTeamStats(date_to_nullable=date_api, headers=headers, timeout=60)
+        # 2. 抓取基礎統計數據 (改回 Base 以求最快通關)
+        ts = leaguedashteamstats.LeagueDashTeamStats(
+            date_to_nullable=date_api, 
+            headers=headers, 
+            timeout=30,
+            measure_type_detailed_defense='Base'
+        )
         stats_df = ts.get_data_frames()[0]
         
         return games_df, line_score, stats_df
     except Exception as e:
-        st.sidebar.error(f"⚠️ 連線異常: {str(e)}")
+        st.sidebar.warning(f"⚠️ 目前連線稍慢，建議按 'C' 清除快取再試一次。")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-@st.cache_data(ttl=900) 
-def fetch_live_odds(api_key):
-    if not api_key: return {}
-    try:
-        url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?apiKey={api_key}&regions=us&markets=spreads,totals&bookmakers=pinnacle"
-        r = requests.get(url, timeout=10).json()
-        odds_dict = {g.get('home_team'): {"spread": next((o['point'] for m in g.get('bookmakers', [{}])[0].get('markets', []) if m['key'] == 'spreads' for o in m['outcomes'] if o['name'] == g.get('home_team')), None), "total": next((m['outcomes'][0]['point'] for m in g.get('bookmakers', [{}])[0].get('markets', []) if m['key'] == 'totals'), None)} for g in r if g.get('bookmakers')}
-        return odds_dict
-    except: return {}
-
 # ---------------------------------------------------------
-# 2. 蒙地卡羅萬次模擬引擎 (維持 V32 邏輯)
+# 2. 蒙地卡羅萬次模擬引擎
 # ---------------------------------------------------------
 def run_monte_carlo(h_pts, a_pts, n_sims=10000):
     sim_h = np.random.normal(loc=h_pts, scale=12.0, size=n_sims)
@@ -133,27 +124,23 @@ def calculate_ev(win_prob, odds=1.90):
     return (win_prob * (odds - 1)) - (1 - win_prob)
 
 # ---------------------------------------------------------
-# 3. UI 介面 (保持原本 V32.5 佈局)
+# 3. UI 介面
 # ---------------------------------------------------------
-st.set_page_config(page_title="NBA AI V32.6 精進版", layout="wide", page_icon="🏀") 
+st.set_page_config(page_title="NBA AI V32.7 穩定回歸版", layout="wide", page_icon="🏀") 
 
 st.sidebar.header("🗓️ 歷史回測與實戰控制") 
 target_date = st.sidebar.date_input("選擇賽事日期", datetime.now() - timedelta(hours=8)) 
 formatted_date = target_date.strftime('%Y-%m-%d') 
 
-st.sidebar.divider()
-api_key = st.sidebar.text_input("輸入 API 金鑰 (選填)", type="password")
-
 st.title(f"🏀 NBA AI V32 職業盤: 蒙地卡羅與 EV 決策引擎 ({formatted_date})") 
 
-with st.spinner("啟動穩定引擎：正在參考 V30 路徑領取數據..."): 
+with st.spinner("啟動穩定引擎：正在參考 V30 路徑讀取數據..."): 
     games_df, line_df, stats_df = fetch_nba_lite(formatted_date) 
     raw_inj = fetch_injury_raw() 
-    live_odds = fetch_live_odds(api_key) if api_key else {}
 
 if games_df.empty: 
-    st.warning(f"📅 找不到 {formatted_date} 的賽程數據。")
-    st.info("提示：若手機 V30 能連線，代表 NBA 伺服器對 V30 的物件請求格式較寬容。已將 V32.6 調校至相同格式。")
+    st.warning(f"📅 目前抓不到 {formatted_date} 的數據。")
+    st.info("💡 解決辦法：\n1. 點擊畫面按鍵盤 'C' 清除快取。\n2. 登入 Streamlit 並 Reboot App。\n3. 若 V30 能動，請先用 V30 抓取，再回來重整此頁。")
 else:
     match_data, hit_count, total_finished = [], 0, 0
     t_dict = dict(zip(stats_df['TEAM_ID'], stats_df['TEAM_NAME'])) if not stats_df.empty else {}
@@ -196,49 +183,19 @@ else:
                     hit_status = "✅"; hit_count += 1
                 else: hit_status = "❌"
             
-            m_team = ODDS_API_TEAMS.get(h_n_en)
-            m_spread = live_odds.get(m_team, {}).get("spread", "-")
-
             match_data.append({
                 "對戰組合": f"{a_n} @ {h_n}", "AI淨勝分(客:主)": f"{proj_a:.1f} : {proj_h:.1f}", 
-                "市場讓分(主)": m_spread, "最佳 EV 決策": decision, 
-                "實際比分": f"{a_act} : {h_act}" if is_finished else "-", "勝負命中": hit_status,
-                "reports": h_rep + a_rep, "proj_h": proj_h, "proj_a": proj_a
+                "最佳 EV 決策": decision, "實際比分": f"{a_act} : {h_act}" if is_finished else "-", 
+                "勝負命中": hit_status, "reports": h_rep + a_rep, "proj_h": proj_h, "proj_a": proj_a
             }) 
         except: continue 
 
     df_display = pd.DataFrame(match_data)
     if not df_display.empty:
-        st.dataframe(df_display[["對戰組合", "AI淨勝分(客:主)", "市場讓分(主)", "最佳 EV 決策", "實際比分", "勝負命中"]], use_container_width=True)
+        st.dataframe(df_display[["對戰組合", "AI淨勝分(客:主)", "最佳 EV 決策", "實際比分", "勝負命中"]], use_container_width=True)
 
     if total_finished > 0:
         st.sidebar.divider()
         st.sidebar.metric("🎯 本日 EV 策略命中率", f"{(hit_count/total_finished):.1%}")
 
-    st.divider() 
-    st.header("🔍 蒙地卡羅深度解析儀") 
-    if match_data:
-        s_g = st.selectbox("請選擇分析場次：", match_data, format_func=lambda x: x["對戰組合"]) 
-        col_a, col_b = st.columns(2) 
-        
-        with col_a: 
-            st.subheader("📝 陣容報告") 
-            if s_g["reports"]: 
-                for r in s_g["reports"]: st.error(r) if "🚨" in r else st.warning(r)
-            else: st.success("✅ 目前無重大傷病。") 
-            
-        with col_b: 
-            st.subheader("🎲 動態 EV 模擬") 
-            u_spread = st.number_input("主隊讓分", value=-4.5, step=0.5) 
-            u_total = st.number_input("總分盤口", value=225.5, step=0.5) 
-            
-            sd, stotal = run_monte_carlo(s_g['proj_h'], s_g['proj_a'])
-            pc_h, pc_a = np.mean(sd > -u_spread), np.mean(sd < -u_spread)
-            po, pu = np.mean(stotal > u_total), np.mean(stotal < u_total)
-            
-            st.write(f"主過盤率: `{pc_h:.1%}` | EV: `{calculate_ev(pc_h):.1%}`")
-            st.write(f"客過盤率: `{pc_a:.1%}` | EV: `{calculate_ev(pc_a):.1%}`")
-            st.divider()
-            st.write(f"大分率: `{po:.1%}` | 小分率: `{pu:.1%}`")
-
-st.caption("NBA AI V32.6 - 參考 V30 成功基因：回歸物件式呼叫、標準 Headers、60秒耐力")
+st.caption("NBA AI V32.7 - 穩定回歸版：參考 V30 成功路徑，捨棄強攻，回歸標準連線。")
