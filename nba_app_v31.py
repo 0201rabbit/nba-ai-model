@@ -42,7 +42,7 @@ STAR_PLAYERS = {
 } 
 
 # ---------------------------------------------------------
-# 1. 強效穩定數據引擎
+# 1. 輕量化穩定數據引擎 (V32.3 高強度模擬版)
 # ---------------------------------------------------------
 
 @st.cache_data(ttl=10800) 
@@ -78,7 +78,7 @@ def fetch_nba_lite(game_date_str):
         'Connection': 'keep-alive',
         'Accept': 'application/json, text/plain, */*',
         'x-nba-stats-origin': 'stats',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'x-nba-stats-token': 'true',
         'Referer': 'https://www.nba.com/',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -86,9 +86,9 @@ def fetch_nba_lite(game_date_str):
     }
     
     try:
-        # 直接調用底層 Scoreboard API
-        sb_url = f"https://stats.nba.com/stats/scoreboardv2?DayOffset=0&LeagueID=00&gameDate={date_api}"
         with requests.Session() as session:
+            # 嘗試抓取當日賽程
+            sb_url = f"https://stats.nba.com/stats/scoreboardv2?DayOffset=0&LeagueID=00&gameDate={date_api}"
             r = session.get(sb_url, headers=headers, timeout=15)
             r.raise_for_status()
             data = r.json()
@@ -96,14 +96,26 @@ def fetch_nba_lite(game_date_str):
             games_df = pd.DataFrame(res[0]['rowSet'], columns=res[0]['headers'])
             line_score = pd.DataFrame(res[1]['rowSet'], columns=res[1]['headers'])
 
-        time.sleep(1.0)
+            # 🛡️ 關鍵補強：若今日無數據，自動嘗試昨日 (解決美台時差與 API 空值)
+            if games_df.empty:
+                prev_date_api = (date_obj - timedelta(days=1)).strftime('%m/%d/%Y')
+                sb_url_prev = f"https://stats.nba.com/stats/scoreboardv2?DayOffset=0&LeagueID=00&gameDate={prev_date_api}"
+                r_prev = session.get(sb_url_prev, headers=headers, timeout=15)
+                data_prev = r_prev.json()
+                res_prev = data_prev['resultSets']
+                games_df = pd.DataFrame(res_prev[0]['rowSet'], columns=res_prev[0]['headers'])
+                line_score = pd.DataFrame(res_prev[1]['rowSet'], columns=res_prev[1]['headers'])
+                st.sidebar.info(f"💡 當日無數據，已自動載入前一日賽程")
+
+        time.sleep(1.2)
         
-        # 獲取球隊進階數據
+        # 獲取球隊統計數據
         ts = leaguedashteamstats.LeagueDashTeamStats(date_to_nullable=date_api, headers=headers, timeout=20)
         stats_df = ts.get_data_frames()[0]
         
         return games_df, line_score, stats_df
     except Exception as e:
+        st.sidebar.error(f"⚠️ API 連線異常: {str(e)}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=900) 
@@ -128,9 +140,9 @@ def calculate_ev(win_prob, odds=1.90):
     return (win_prob * (odds - 1)) - (1 - win_prob)
 
 # ---------------------------------------------------------
-# 3. UI 介面設定
+# 3. UI 介面
 # ---------------------------------------------------------
-st.set_page_config(page_title="NBA AI V32.2 終極穩定版", layout="wide", page_icon="🏀") 
+st.set_page_config(page_title="NBA AI V32.3 防封鎖加強版", layout="wide", page_icon="🏀") 
 
 st.sidebar.header("🗓️ 歷史回測與實戰控制") 
 target_date = st.sidebar.date_input("選擇賽事日期", datetime.now() - timedelta(hours=8)) 
@@ -138,18 +150,17 @@ formatted_date = target_date.strftime('%Y-%m-%d')
 
 st.sidebar.divider()
 st.sidebar.markdown("### 🤖 自動化盤口分析")
-api_key = st.sidebar.text_input("輸入 The Odds API 金鑰", type="password")
+api_key = st.sidebar.text_input("輸入 API 金鑰 (選填)", type="password")
 
 st.title(f"🏀 NBA AI V32 職業盤: 蒙地卡羅與 EV 決策引擎 ({formatted_date})") 
 
-with st.spinner("啟動終極引擎：正在突破 NBA 伺服器防護並抓取數據..."): 
+with st.spinner("啟動穩定引擎：讀取賽事與傷兵名單..."): 
     games_df, line_df, stats_df = fetch_nba_lite(formatted_date) 
     raw_inj = fetch_injury_raw() 
     live_odds = fetch_live_odds(api_key) if api_key else {}
 
 if games_df.empty: 
-    st.warning(f"📅 找不到 {formatted_date} 的賽程數據。")
-    st.info("💡 貼心提醒：\n1. 如果是台灣早上時間，請手動將日期切換至昨天。\n2. 若確定日期正確，可能是 NBA 伺服器流量過載，請按 'C' 清除快取後重整。")
+    st.info(f"📅 查無賽程。請確認日期或按 'C' 清除快取後重整。") 
 else:
     match_data, hit_count, total_finished = [], 0, 0
     t_dict = dict(zip(stats_df['TEAM_ID'], stats_df['TEAM_NAME'])) if not stats_df.empty else {}
@@ -164,34 +175,27 @@ else:
         h_n, a_n = TEAM_CN.get(h_n_en, h_n_en), TEAM_CN.get(a_n_en, a_n_en) 
         
         try: 
-            # 解析比分
             h_pts_raw = line_df.loc[line_df['TEAM_ID'] == h_id, 'PTS'].values 
             a_pts_raw = line_df.loc[line_df['TEAM_ID'] == a_id, 'PTS'].values 
             h_act, a_act = (int(h_pts_raw[0]), int(a_pts_raw[0])) if len(h_pts_raw) > 0 and pd.notna(h_pts_raw[0]) else (0, 0)
             is_finished = (h_act > 0 and a_act > 0)
 
-            # 基礎實力
             h_d = stats_df[stats_df["TEAM_ID"] == h_id].iloc[0]
             a_d = stats_df[stats_df["TEAM_ID"] == a_id].iloc[0]
             
-            # 傷兵評估
             h_pen, h_rep = get_injury_impact(h_n_en, raw_inj) 
             a_pen, a_rep = get_injury_impact(a_n_en, raw_inj) 
             
-            # 預測分組 (主場優勢 +2.5)
             proj_h = h_d["PTS"] + 2.5 - h_pen
             proj_a = a_d["PTS"] - a_pen
 
-            # 蒙地卡羅模擬
             sim_diff, _ = run_monte_carlo(proj_h, proj_a)
             prob_h = np.mean(sim_diff > 0)
             
-            # 決策判斷
-            decision = "⚠️ 五五波 (避開)"
-            if prob_h > 0.58: decision = f"主勝 ({prob_h:.1%})"
-            elif prob_h < 0.42: decision = f"客勝 ({(1-prob_h):.1%})"
+            decision = f"⚠️ 五五波"
+            if prob_h > 0.55: decision = f"主勝 ({prob_h:.1%})"
+            elif prob_h < 0.45: decision = f"客勝 ({(1-prob_h):.1%})"
 
-            # 命中率統計
             hit_status = "無"
             if is_finished and "⚠️" not in decision:
                 total_finished += 1
@@ -199,57 +203,49 @@ else:
                     hit_status = "✅"; hit_count += 1
                 else: hit_status = "❌"
             
-            # 市場賠率與讓分
             m_team = ODDS_API_TEAMS.get(h_n_en)
             m_spread = live_odds.get(m_team, {}).get("spread", "-")
 
             match_data.append({
-                "對戰組合": f"{a_n} @ {h_n}", 
-                "AI預期分差": f"{proj_a:.1f} : {proj_h:.1f}", 
-                "市場讓分": m_spread, 
-                "最佳決策": decision, 
-                "實際比分": f"{a_act} : {h_act}" if is_finished else "進行中", 
-                "勝負命中": hit_status,
+                "對戰組合": f"{a_n} @ {h_n}", "AI淨勝分(客:主)": f"{proj_a:.1f} : {proj_h:.1f}", 
+                "市場讓分(主)": m_spread, "最佳 EV 決策": decision, 
+                "實際比分": f"{a_act} : {h_act}" if is_finished else "-", "勝負命中": hit_status,
                 "reports": h_rep + a_rep, "proj_h": proj_h, "proj_a": proj_a
             }) 
         except: continue 
 
-    # 顯示主表格
     df_display = pd.DataFrame(match_data)
     if not df_display.empty:
-        st.dataframe(df_display[["對戰組合", "AI預期分差", "市場讓分", "最佳決策", "實際比分", "勝負命中"]], use_container_width=True)
+        st.dataframe(df_display[["對戰組合", "AI淨勝分(客:主)", "市場讓分(主)", "最佳 EV 決策", "實際比分", "勝負命中"]], use_container_width=True)
 
-    # 側邊欄即時戰果
     if total_finished > 0:
         st.sidebar.divider()
         st.sidebar.metric("🎯 本日 EV 策略命中率", f"{(hit_count/total_finished):.1%}")
 
     st.divider() 
-    st.header("🔍 蒙地卡羅深度解析儀 (單場演算)") 
+    st.header("🔍 蒙地卡羅深度解析儀") 
     if match_data:
-        s_g = st.selectbox("請選擇場次進行一萬次深度演算：", match_data, format_func=lambda x: x["對戰組合"]) 
+        s_g = st.selectbox("請選擇分析場次：", match_data, format_func=lambda x: x["對戰組合"]) 
         col_a, col_b = st.columns(2) 
         
         with col_a: 
-            st.subheader("📝 陣容即時情報") 
+            st.subheader("📝 陣容報告") 
             if s_g["reports"]: 
                 for r in s_g["reports"]: st.error(r) if "🚨" in r else st.warning(r)
-            else: st.success("✅ 目前該場次暫無重大星級球員缺陣。") 
+            else: st.success("✅ 目前無重大傷病。") 
             
         with col_b: 
-            st.subheader("🎲 自定義 EV 試算") 
-            u_spread = st.number_input("輸入主隊目前讓分 (如 -4.5)", value=-4.5, step=0.5) 
-            u_total = st.number_input("輸入總分盤口 (如 225.5)", value=225.5, step=0.5) 
+            st.subheader("🎲 動態 EV 模擬") 
+            u_spread = st.number_input("主隊讓分", value=-4.5, step=0.5) 
+            u_total = st.number_input("總分盤口", value=225.5, step=0.5) 
             
             sd, stotal = run_monte_carlo(s_g['proj_h'], s_g['proj_a'])
             pc_h, pc_a = np.mean(sd > -u_spread), np.mean(sd < -u_spread)
             po, pu = np.mean(stotal > u_total), np.mean(stotal < u_total)
             
-            st.write(f"▶️ **讓分盤結果：**")
             st.write(f"主過盤率: `{pc_h:.1%}` | EV: `{calculate_ev(pc_h):.1%}`")
             st.write(f"客過盤率: `{pc_a:.1%}` | EV: `{calculate_ev(pc_a):.1%}`")
             st.divider()
-            st.write(f"▶️ **大小分結果：**")
             st.write(f"大分率: `{po:.1%}` | 小分率: `{pu:.1%}`")
 
-st.caption("NBA AI V32.2 - 已修正 V32 變數錯誤並優化 Header 穿透性。")
+st.caption("NBA AI V32.3 - 強化版數據引擎：自動處理美台時差與穿透式 Headers")
